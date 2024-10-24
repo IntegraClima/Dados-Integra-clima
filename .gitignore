@@ -1,0 +1,11 @@
+# Ignore all files in the data/ directory
+data/pysus
+
+# Except for the .gitkeep file
+!data/.gitkeep
+
+# Ignore the .venv directory
+.venv/
+
+# Ignore Python cache directories
+**/__pycache__/
