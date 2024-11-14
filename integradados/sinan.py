@@ -12,7 +12,7 @@ def add_dv_safe(geocode):
     except Exception as e:
         print(f"Error processing geocode {geocode}: {e}")
         return 0
-    
+
 def last_day_of_year(year):
     try:
         last_day = pd.to_datetime(year + "-12-31")
@@ -35,6 +35,8 @@ def download_data(
     parquets = sinan.download(files, local_dir=dataset_dir)
     return [parquet.path for parquet in parquets]
 
+def extract_data(parquet_path, columns=None, filter=None):
+    return ds.dataset(parquet_path, format='parquet').to_table(columns, filter)
 
 def transform_to_visao(
     parquet_paths: List[str],
@@ -48,8 +50,7 @@ def transform_to_visao(
         print(parquet)
         group_cols = [year_col, geocode_col]
         data_agg = (
-            ds.dataset(parquet, format='parquet')
-            .to_table(columns=group_cols)
+            extract_data(parquet, columns=group_cols)
             .group_by(group_cols)
             .aggregate([([], "count_all")])
             .to_pandas()
@@ -59,7 +60,7 @@ def transform_to_visao(
         data_agg["geocode"] = data_agg["geocode"].str.strip().apply(add_dv_safe).astype(str)
         data_agg = data_agg[data_agg["geocode"].isin(pop["MUNIC_RES"].astype(str))]
         data_agg["data"] = data_agg["data"].apply(last_day_of_year)
-        data_agg["data"] = pd.to_datetime(data_agg["data"])
+        data_agg["data"] = pd.to_datetime(data_agg["data"]).dt.date
         data_agg.dropna(inplace=True)
         df_list.append(data_agg)
     df = pd.concat(df_list, ignore_index=True).sort_values(["data", "geocode"])
@@ -77,22 +78,23 @@ def aggregate_visao_count(df: pd.DataFrame, value_col: str = "valor"):
 
 def generate_visao_data(
         dis_codes: List[str] = ['DENG', 'ESQU', 'LEIV', 'MALA', 'RAIV'],
-        data_dir: str = "data"
+        data_dir: str = "data/visao"
 ):
     csv_files = []
     for dis_code in dis_codes:
         parquets = download_data(dis_code)
         df_mun = transform_to_visao(parquets)
-        df_uf = transform_geocode_to_uf(df_mun)
-        df_uf = aggregate_visao_count(df_uf)
         csv_municipio = os.path.join(data_dir, f"{dis_code.lower()}-municipio.csv")
         df_mun.to_csv(csv_municipio, index=False, date_format="%d/%m/%Y")
+        df_uf = transform_geocode_to_uf(df_mun)
+        df_uf = aggregate_visao_count(df_uf)
         csv_uf = os.path.join(data_dir, f"{dis_code.lower()}-uf.csv")
         df_uf.to_csv(csv_uf, index=False, date_format="%d/%m/%Y")
         csv_files.append([csv_municipio, csv_uf])
+    return csv_files
 
 
 if __name__ == "__main__":
     dis_codes = ['DENG', 'ESQU', 'LEIV', 'MALA', 'RAIV']
-    csv_files = generate_visao_data(dis_codes)
+    csv_files = generate_visao_data(dis_codes, "data/visao")
     print(f"Generated files: {csv_files}")
