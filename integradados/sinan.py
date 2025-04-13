@@ -1,8 +1,8 @@
-from pyarrow import dataset as ds
+from pyarrow import dataset as ds, Table
 from pysus.ftp.databases.sinan import SINAN
 from pysus.preprocessing.decoders import add_dv
 from pysus.online_data import IBGE
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 import os
 import pandas as pd
 
@@ -35,27 +35,39 @@ def download_data(
     parquets = sinan.download(files, local_dir=dataset_dir)
     return [parquet.path for parquet in parquets]
 
-def extract_data(parquet_path, columns=None, filter=None):
+def extract_data(parquet_path, columns=None, filter=None) -> Table:
     return ds.dataset(parquet_path, format='parquet').to_table(columns, filter)
 
-def transform_to_visao(
+def table_count_by(tbl: Table, group_cols: List[str]) -> pd.DataFrame:
+    data_agg = (
+        tbl
+        .group_by(group_cols)
+        .aggregate([([], "count_all")])
+        .to_pandas()
+    )
+    return data_agg
+
+def transform_count_by(
     parquet_paths: List[str],
     name: str = None,
     year_col: str = "NU_ANO",
-    geocode_col: str = "ID_MUNICIP"
+    geocode_col: str = "ID_MUNICIP",
+    other_group_cols: Dict[str, str] = {}
 ) -> pd.DataFrame:
     df_list = []
     pop = IBGE.get_population(year=2021)
+    other_group_cols_from = other_group_cols.keys()
+    other_group_cols_to = other_group_cols.values()
     for parquet in parquet_paths:
         print(parquet)
-        group_cols = [year_col, geocode_col]
+        group_cols = [year_col, geocode_col] + list(other_group_cols_from)
+        print(group_cols)
+        data_agg = extract_data(parquet, columns=group_cols)
         data_agg = (
-            extract_data(parquet, columns=group_cols)
-            .group_by(group_cols)
-            .aggregate([([], "count_all")])
-            .to_pandas()
+            table_count_by(data_agg, group_cols)
             .rename(columns={year_col: "data", geocode_col: "geocode",
                              "count_all": "valor"})
+            .rename(columns=other_group_cols)
         )
         data_agg["geocode"] = data_agg["geocode"].str.strip().apply(add_dv_safe).astype(str)
         data_agg = data_agg[data_agg["geocode"].isin(pop["MUNIC_RES"].astype(str))]
@@ -64,6 +76,33 @@ def transform_to_visao(
         data_agg.dropna(inplace=True)
         df_list.append(data_agg)
     df = pd.concat(df_list, ignore_index=True).sort_values(["data", "geocode"])
+    output_cols = ['geocode', 'valor', 'data'] + list(other_group_cols_to)
+    return df[output_cols]
+
+def transform_to_visao(
+    parquet_paths: List[str],
+    name: str = None,
+    year_col: str = "NU_ANO",
+    geocode_col: str = "ID_MUNICIP",
+    other_group_cols: Dict[str, str] = {}
+) -> pd.DataFrame:
+    df_list = []
+    pop = IBGE.get_population(year=2021)
+    for parquet in parquet_paths:
+        print(parquet)
+        group_cols = [year_col, geocode_col]
+        data_agg = extract_data(parquet, columns=group_cols)
+        data_agg = table_count_by(data_agg, group_cols)
+        data_agg.rename(columns={year_col: "data", geocode_col: "geocode",
+                             "count_all": "valor"}, inplace=True)
+        data_agg["geocode"] = data_agg["geocode"].str.strip().apply(add_dv_safe).astype(str)
+        data_agg = data_agg[data_agg["geocode"].isin(pop["MUNIC_RES"].astype(str))]
+        data_agg["data"] = data_agg["data"].apply(last_day_of_year)
+        data_agg.dropna(inplace=True)
+        data_agg["data"] = pd.to_datetime(data_agg["data"]).dt.date
+        df_list.append(data_agg)
+    df = pd.concat(df_list, ignore_index=True)
+    df = df.groupby(["data", "geocode"]).sum().reset_index().sort_values(["data", "geocode"])
     return df[['geocode', 'valor', 'data']]
 
 def transform_geocode_to_uf(df: pd.DataFrame, geocode_col: str = "geocode"):
@@ -83,9 +122,10 @@ def generate_visao_data(
     csv_files = []
     for dis_code in dis_codes:
         parquets = download_data(dis_code)
-        df_mun = transform_to_visao(parquets)
         csv_municipio = os.path.join(data_dir, f"{dis_code.lower()}-municipio.csv")
-        df_mun.to_csv(csv_municipio, index=False, date_format="%d/%m/%Y")
+        df_mun = transform_to_visao(parquets)
+        df_mun["data"] = df_mun["data"].apply(lambda x: x.strftime("%d/%m/%Y"))
+        df_mun.to_csv(csv_municipio, index=False)
         df_uf = transform_geocode_to_uf(df_mun)
         df_uf = aggregate_visao_count(df_uf)
         csv_uf = os.path.join(data_dir, f"{dis_code.lower()}-uf.csv")
@@ -95,6 +135,6 @@ def generate_visao_data(
 
 
 if __name__ == "__main__":
-    dis_codes = ['DENG', 'ESQU', 'LEIV', 'MALA', 'RAIV']
+    dis_codes = ['CHAG', 'DENG', 'ESQU', 'LEIV', 'LEPT', 'LTAN', 'MALA', 'RAIV']
     csv_files = generate_visao_data(dis_codes, "data/visao")
     print(f"Generated files: {csv_files}")
