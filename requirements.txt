@@ -1,4 +1,15 @@
 pandas==2.2.3
 pyarrow==17.0.0
-pysus==0.14.3
+pysus==0.15.0
 requests==2.32.3
+numpy
+xarray
+matplotlib
+regionmask
+geopandas 
+joblib
+rioxarray
+geobr
+netCDF4
+dask
+scipy
